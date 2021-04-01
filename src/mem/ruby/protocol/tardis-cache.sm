@@ -382,22 +382,6 @@ machine(MachineType:L1Cache, "MSI cache")
           out_msg.progTS := progTS_global;
         }
     }
-
-    action(sendShareRequest_shared, 'sSRS', desc="Send share request to directory after lease expiration") {
-
-        enqueue(request_out, RequestMsg, 1) {
-          out_msg.addr := address;
-          out_msg.Type := CoherenceRequestType:ShareRequest; 
-          out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
-          out_msg.MessageSize := MessageSizeType:Control;
-          out_msg.Requestor := machineID;
-          out_msg.writeTS := cache_entry.writeTS;
-          out_msg.readTS := 0;
-          out_msg.progTS := progTS_global; //set this up
-      }
-
-    }
-
     // Send ExclusiveRequest to TM
     action(sendExclusiveRequest_invalid, 'sERI', desc="Send exclusive request to directory from Invalid") {
 
@@ -428,22 +412,6 @@ machine(MachineType:L1Cache, "MSI cache")
       }
     }
 
-    action(writeReadTSToCache, "wr", desc="Write read TS to cache") {
-        peek(response_in, ResponseMsg) {
-            assert(is_valid(cache_entry));
-            cache_entry.readTS := in_msg.readTS;
-        }
-    }
-
-    
-    action(writeTimestampsToCache, "wt", desc="Write timestamps to cache") {
-        peek(response_in, ResponseMsg) {
-            assert(is_valid(cache_entry));
-            cache_entry.readTS := in_msg.readTS;
-            cache_entry.writeTS := in_msg.writeTS;
-        }
-
-    }
 
 
     action(writeDataToCache, "wd", desc="Write data to the cache") {

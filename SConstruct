@@ -563,11 +563,11 @@ if main['USE_PYTHON']:
 
     # Found a working Python installation. Check if it meets minimum
     # requirements.
-    if py_version[0] < 3 or \
-    (py_version[0] == 3 and py_version[1] < 6):
-        error('Python version too old. Version 3.6 or newer is required.')
-    elif py_version[0] > 3:
-        warning('Python version too new. Python 3 expected.')
+##    if py_version[0] < 3 or \
+##    (py_version[0] == 3 and py_version[1] < 6):
+##        error('Python version too old. Version 3.6 or newer is required.')
+##    elif py_version[0] > 3:
+##        warning('Python version too new. Python 3 expected.')
 
 # On Solaris you need to use libsocket for socket ops
 if not conf.CheckLibWithHeader(

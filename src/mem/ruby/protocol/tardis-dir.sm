@@ -426,6 +426,10 @@ machine(MachineType:Directory, "Directory protocol")
         popRequestQueue;
     }
 
+    transition(S_mem, ShareRequest) {
+        stall;
+    }
+
     // Receive exclusive request, send to memory
     transition(I, ExclusiveRequest, E_mem) {
         updateTS_loadE;
@@ -455,7 +459,7 @@ machine(MachineType:Directory, "Directory protocol")
     }
 
     transition(E_wb, WritebackResponse, S) {
-        sendDataToMem;
+        sendRespDataToMem;
         sendShareData;
         popRequestQueue;
        // probably need more here
@@ -468,7 +472,7 @@ machine(MachineType:Directory, "Directory protocol")
     }
 
     transition(E_fl, FlushResponse, E) {
-        sendDataToMem;
+        sendRespDataToMem;
         sendExclusiveData;
         popRequestQueue;
     }
