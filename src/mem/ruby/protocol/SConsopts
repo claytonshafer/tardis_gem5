@@ -31,6 +31,7 @@ import os
 Import('*')
 
 all_protocols.extend([
+    'TARDIS',
     'GPU_VIPER',
     'GPU_VIPER_Baseline',
     'GPU_VIPER_Region',

@@ -1,0 +1,502 @@
+
+machine(MachineType:Directory, "Directory protocol")
+    :
+      // This "DirectoryMemory" is a little weird. It is initially allocated
+      // so that it *can* cover all of memory (i.e., there are pointers for
+      // every 64-byte block in memory). However, the entries are lazily
+      // created in getDirEntry()
+      DirectoryMemory * directory;
+      // You can put any parameters you want here. They will be exported as
+      // normal SimObject parameters (like in the SimObject description file)
+      // and you can set these parameters at runtime via the python config
+      // file. If there is no default here (like directory), it is mandatory
+      // to set the parameter in the python config. Otherwise, it uses the
+      // default value set here.
+      Cycles toMemLatency := 1;
+
+    // Response from the directory *to* the cache.
+    MessageBuffer *responseToCache, network="To", virtual_network="2",
+          vnet_type="response";
+
+
+    MessageBuffer *requestToCache, network="To", virtual_network="1",
+          vnet_type="request";
+
+    // Requests *from* the cache to the directory
+    MessageBuffer *requestFromCache, network="From", virtual_network="0",
+          vnet_type="request";
+
+    // Responses *from* the cache to the directory
+    MessageBuffer *responseFromCache, network="From", virtual_network="2",
+          vnet_type="response";
+
+    // Special buffer for memory requests. Kind of like the mandatory queue
+    MessageBuffer *requestToMemory;
+
+    // Special buffer for memory responses. Kind of like the mandatory queue
+    MessageBuffer *responseFromMemory;
+
+    int memTS;
+
+{
+    // For many things in SLICC you can specify a default. However, this
+    // default must use the C++ name (mangled SLICC name). For the state below
+    // you have to use the controller name and the name we use for states.
+    state_declaration(State, desc="Directory states",
+                      default="Directory_State_I") {
+        // Stable states.
+        // NOTE: Thise are "cache-centric" states like in Sorin et al.
+        // However, The access permissions are memory-centric.
+        I, AccessPermission:Read_Write,  desc="Invalid in the caches.";
+        S, AccessPermission:Read_Only,   desc="At least one cache has the blk";
+        E, AccessPermission:Invalid,     desc="A cache has the block in M";
+
+        // Moving from exclusive to shared, waiting for writeback reply
+        E_wb, AccessPermission:Busy,      desc="Waiting for data from owner";
+
+        // Moving from shared to exclusive, waiting for flush reply
+        E_fl, AccessPermission:Busy,      desc="Waiting for flush";
+
+        // Transient states
+        Sr_mem, AccessPermission:Busy,    desc="Waiting for data from memory";
+        S_mem, AccessPermission:Invalid,  desc="Waiting for data from memory";
+        E_mem, AccessPermission:Invalid,  desc="Waiting for data from memory"; 
+    }
+
+    enumeration(Event, desc="Directory events") {
+        // Data requests from the cache
+        ShareRequest,  desc="Request for read-only data from the cache";
+        ExclusiveRequest, desc="Request for read-write data from the cache";
+        
+        // Responses
+        WritebackResponse,  desc="Core writes back cache data";
+        FlushResponse,      desc="Core flushes data";
+
+
+        // From Memory
+        MemData,      desc="Data from memory";
+        MemAck,       desc="Ack from memory that write is complete";
+    }
+
+    // NOTE: We use a netdest for the sharers and the owner so we can simply
+    // copy the structure into the message we send as a response.
+    structure(Entry, desc="...", interface="AbstractCacheEntry", main="false") {
+        State DirState,         desc="Directory state";
+        NetDest Owner,          desc="Owner of this block";
+        DataBlock DataBlk,      desc="Data in LLC";
+        int readTS,             desc="Read timestamp of this block";
+        int writeTS,            desc="Write timestamp of this block";
+    }
+
+    Tick clockEdge();
+
+    // This either returns the valid directory entry, or, if it hasn't been
+    // allocated yet, this allocates the entry. This may save some host memory
+    // since this is lazily populated.
+    Entry getDirectoryEntry(Addr addr), return_by_pointer = "yes" {
+        Entry dir_entry := static_cast(Entry, "pointer", directory[addr]);
+        if (is_invalid(dir_entry)) {
+            // This first time we see this address allocate an entry for it.
+            dir_entry := static_cast(Entry, "pointer",
+                                     directory.allocate(addr, new Entry));
+        }
+        return dir_entry;
+    }
+
+    /*************************************************************************/
+    // Functions that we need to define/override to use our specific structures
+    // in this implementation.
+    // NOTE: we don't have TBE in this machine, so we don't need to pass it
+    // to these overridden functions.
+
+    State getState(Addr addr) {
+        if (directory.isPresent(addr)) {
+            return getDirectoryEntry(addr).DirState;
+        } else {
+            return State:I;
+        }
+    }
+
+    void setState(Addr addr, State state) {
+        if (directory.isPresent(addr)) {
+            if (state == State:E) {
+                DPRINTF(RubySlicc, "Owner %s\n", getDirectoryEntry(addr).Owner);
+                assert(getDirectoryEntry(addr).Owner.count() == 1);
+
+            }
+            getDirectoryEntry(addr).DirState := state;
+            if (state == State:I)  {
+                assert(getDirectoryEntry(addr).Owner.count() == 0);
+
+            }
+        }
+    }
+
+    // This is really the access permissions of memory.
+    // TODO: I don't understand this at the directory.
+    AccessPermission getAccessPermission(Addr addr) {
+        if (directory.isPresent(addr)) {
+            Entry e := getDirectoryEntry(addr);
+            return Directory_State_to_permission(e.DirState);
+        } else  {
+            return AccessPermission:NotPresent;
+        }
+    }
+    void setAccessPermission(Addr addr, State state) {
+        if (directory.isPresent(addr)) {
+            Entry e := getDirectoryEntry(addr);
+            e.changePermission(Directory_State_to_permission(state));
+        }
+    }
+
+    void functionalRead(Addr addr, Packet *pkt) {
+        functionalMemoryRead(pkt);
+    }
+
+    // This returns the number of writes. So, if we write then return 1
+    int functionalWrite(Addr addr, Packet *pkt) {
+        if (functionalMemoryWrite(pkt)) {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+
+
+    /*************************************************************************/
+    // Network ports
+
+    out_port(request_out, RequestMsg, requestToCache);
+    out_port(response_out, ResponseMsg, responseToCache);
+    out_port(memQueue_out, MemoryMsg, requestToMemory);
+
+    in_port(memQueue_in, MemoryMsg, responseFromMemory) {
+        if (memQueue_in.isReady(clockEdge())) {
+            peek(memQueue_in, MemoryMsg) {
+                if (in_msg.Type == MemoryRequestType:MEMORY_READ) {
+                    trigger(Event:MemData, in_msg.addr);
+                } else if (in_msg.Type == MemoryRequestType:MEMORY_WB) {
+                    trigger(Event:MemAck, in_msg.addr);
+                } else {
+                    error("Invalid message");
+                }
+            }
+        }
+    }
+
+    in_port(response_in, ResponseMsg, responseFromCache) {
+        if (response_in.isReady(clockEdge())) {
+            peek(response_in, ResponseMsg) {
+                if (in_msg.Type == CoherenceResponseType:FlushResponse) {
+                    trigger(Event:FlushResponse, in_msg.addr);
+                } else if (in_msg.Type == CoherenceResponseType:WritebackResponse) {
+                    trigger(Event:WritebackResponse, in_msg.addr);
+                } else {
+                    error("Unexpected message type.");
+                }
+            }
+        }
+    }
+
+    in_port(request_in, RequestMsg, requestFromCache) {
+        if (request_in.isReady(clockEdge())) {
+            peek(request_in, RequestMsg) {
+                Entry entry := getDirectoryEntry(in_msg.addr);
+                if (in_msg.Type == CoherenceRequestType:ShareRequest) {
+                    trigger(Event:ShareRequest, in_msg.addr);
+                } else if (in_msg.Type == CoherenceRequestType:ExclusiveRequest) {
+                    trigger(Event:ExclusiveRequest, in_msg.addr);
+                } else {
+                    error("Unexpected message type.");
+                }
+            }
+        }
+    }
+
+
+
+    /*************************************************************************/
+    // Actions
+
+    // Memory actions.
+
+    action(sendMemRead, "r", desc="Send a memory read request") {
+        peek(request_in, RequestMsg) {
+            // Send request through special memory request queue. At some
+            // point the response will be on the memory response queue.
+            // Like enqueue, this takes a latency for the request.
+            enqueue(memQueue_out, MemoryMsg, toMemLatency) {
+                out_msg.addr := address;
+                out_msg.Type := MemoryRequestType:MEMORY_READ;
+                out_msg.Sender := in_msg.Requestor;
+                out_msg.MessageSize := MessageSizeType:Request_Control;
+                out_msg.Len := 0;
+            }
+        }
+    }
+
+    action(sendDataToMem, "w", desc="Write data to memory") {
+        peek(request_in, RequestMsg) {
+            DPRINTF(RubySlicc, "Writing memory for %#x\n", address);
+            DPRINTF(RubySlicc, "Writing %s\n", in_msg.DataBlk);
+            enqueue(memQueue_out, MemoryMsg, toMemLatency) {
+                out_msg.addr := address;
+                out_msg.Type := MemoryRequestType:MEMORY_WB;
+                out_msg.Sender := in_msg.Requestor;
+                out_msg.MessageSize := MessageSizeType:Writeback_Data;
+                out_msg.DataBlk := in_msg.DataBlk;
+                out_msg.Len := 0;
+            }
+        }
+    }
+
+    action(sendRespDataToMem, "rw", desc="Write data to memory from resp") {
+        peek(response_in, ResponseMsg) {
+            DPRINTF(RubySlicc, "Writing memory for %#x\n", address);
+            DPRINTF(RubySlicc, "Writing %s\n", in_msg.DataBlk);
+            enqueue(memQueue_out, MemoryMsg, toMemLatency) {
+                out_msg.addr := address;
+                out_msg.Type := MemoryRequestType:MEMORY_WB;
+                out_msg.Sender := in_msg.Sender;
+                out_msg.MessageSize := MessageSizeType:Writeback_Data;
+                out_msg.DataBlk := in_msg.DataBlk;
+                out_msg.Len := 0;
+            }
+        }
+    }
+
+    // Sharer/owner actions
+
+
+    action(setOwner, "sO", desc="Set the owner") {
+        peek(request_in, RequestMsg) {
+            getDirectoryEntry(address).Owner.add(in_msg.Requestor);
+        }
+    }
+
+    action(clearOwner, "cO", desc="Clear the owner") {
+        getDirectoryEntry(address).Owner.clear();
+    }
+
+    action(popResponseQueue, "pR", desc="Pop the response queue") {
+        response_in.dequeue(clockEdge());
+    }
+
+    action(popRequestQueue, "pQ", desc="Pop the request queue") {
+        request_in.dequeue(clockEdge());
+    }
+
+    action(popMemQueue, "pM", desc="Pop the memory queue") {
+        memQueue_in.dequeue(clockEdge());
+    }
+
+    // Stalling actions
+    action(stall, "z", desc="Stall the incoming request") {
+        // Do nothing.
+    }
+
+    // Make new directory entry - shared
+    action(updateTS_loadS, "uTSl", desc="make new directory entry") {
+        Entry e := getDirectoryEntry(address);
+        peek(request_in, RequestMsg) {
+            if (in_msg.progTS + 10 > e.writeTS + 10) {
+              e.readTS := in_msg.progTS + 10;
+            }
+            if (in_msg.progTS + 10 <= e.writeTS + 10) {
+              e.readTS := e.writeTS + 10;
+            }
+        }
+
+    }
+
+    // update timestamps after exclusive 
+    action(updateTS_loadE, "uTS", desc="update timestamps") {
+        Entry e := getDirectoryEntry(address);
+        peek(request_in, RequestMsg) {
+            e.writeTS := in_msg.writeTS;
+            e.readTS := in_msg.readTS;
+        }
+    }
+
+    // Send exclusive Reply
+    action(sendExclusiveReply, "sER", desc="send exclusive reply to requestor") {
+        Entry e := getDirectoryEntry(address);
+        peek(memQueue_in, MemoryMsg) {
+            enqueue(response_out, ResponseMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceResponseType:ExclusiveResponse;
+                out_msg.Sender := machineID;
+                out_msg.Destination.add(in_msg.OriginalRequestorMachId);
+                out_msg.DataBlk := in_msg.DataBlk;
+                out_msg.readTS := e.readTS;
+                out_msg.writeTS := e.writeTS;
+            }
+        }
+    }
+
+    // Send share reply from state S
+    action(sendShareReply, "sSR", desc="send share reply from state S") {
+        Entry e := getDirectoryEntry(address);
+        peek(memQueue_in, MemoryMsg) {
+            enqueue(response_out, ResponseMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceResponseType:ShareResponse;
+                out_msg.Sender := machineID;
+                out_msg.Destination.add(in_msg.OriginalRequestorMachId);
+                out_msg.DataBlk := in_msg.DataBlk;
+                out_msg.readTS := e.readTS;
+                out_msg.writeTS := e.writeTS;
+            }
+        }
+    }
+
+    // Send writeback request
+    action(sendWritebackRequest, "sWB", desc="send writeback request") {
+        Entry e := getDirectoryEntry(address);
+        peek(request_in, RequestMsg) {
+            enqueue(request_out, RequestMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceRequestType:WritebackRequest;
+                out_msg.Requestor := machineID;
+                out_msg.Destination := e.Owner;
+                out_msg.readTS := in_msg.progTS + 10;
+                out_msg.original_requestor := in_msg.Requestor;
+            }
+        }        
+    }
+
+    // Send flush request
+    action(sendFlushRequest, "sFL", desc="send flush request") {
+        Entry e := getDirectoryEntry(address);
+        peek(request_in, RequestMsg) {
+            enqueue(request_out, RequestMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceRequestType:FlushRequest;
+                out_msg.Requestor := machineID;
+                out_msg.Destination := e.Owner;
+                out_msg.original_requestor := in_msg.Requestor;
+                out_msg.readTS := e.readTS;
+            }
+        }        
+    }
+
+    // Send data to requestor - going to state E
+    action(sendExclusiveData, "sED", desc="send data to requestor, going to state E") {
+        Entry e := getDirectoryEntry(address);
+        peek(response_in, ResponseMsg) {
+            enqueue(response_out, ResponseMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceResponseType:ExclusiveResponse;
+                out_msg.Sender := machineID;
+                out_msg.Destination.add(in_msg.original_requestor);
+                out_msg.DataBlk := in_msg.DataBlk;
+                e.writeTS := in_msg.writeTS;
+                e.readTS := in_msg.readTS;
+                out_msg.readTS := e.readTS;
+                out_msg.writeTS := e.writeTS; 
+            }
+        } 
+    }
+
+    // Send data to requestor - going to state S
+    action(sendShareData, "sSD", desc="send data to requestor, going to state S") {
+        Entry e := getDirectoryEntry(address);
+        peek(response_in, ResponseMsg) {
+            enqueue(response_out, ResponseMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceResponseType:ShareResponse;
+                out_msg.Sender := machineID;
+                out_msg.Destination.add(in_msg.original_requestor);
+                out_msg.DataBlk := in_msg.DataBlk;
+                e.readTS := in_msg.readTS;
+                e.writeTS := in_msg.writeTS;
+                out_msg.readTS := e.readTS;
+                out_msg.writeTS := e.writeTS;
+            }
+        }
+    }
+
+    /*************************************************************************/
+    // transitions
+
+    // Receive shared request, send to memory
+    transition(I, ShareRequest, S_mem) {
+        updateTS_loadS;
+        sendMemRead;
+        popRequestQueue;
+    }
+
+    // Receive exclusive request, send to memory
+    transition(I, ExclusiveRequest, E_mem) {
+        updateTS_loadE;
+        sendMemRead;
+        popRequestQueue;
+    } 
+
+    // Receive data from memory, move to state S
+    transition(S_mem, MemData, S) {
+        sendShareReply;
+        popMemQueue;
+    } 
+
+    // Receive data from memory, move to state E
+    transition(E_mem, MemData, E) {   
+        sendExclusiveReply;
+        setOwner;
+        popMemQueue;
+    }
+
+
+    // Receive share request from state E, send writeback request
+    transition(E, ShareRequest, E_wb) {
+        sendWritebackRequest;
+        setOwner;
+        popRequestQueue;
+    }
+
+    transition(E_wb, WritebackResponse, S) {
+        sendDataToMem;
+        sendShareData;
+        popRequestQueue;
+       // probably need more here
+    }
+
+    // Receive exclusive request from state E, send flush request
+    transition(E, ExclusiveRequest, E_fl) {
+        sendFlushRequest;
+        popRequestQueue;
+    }
+
+    transition(E_fl, FlushResponse, E) {
+        sendDataToMem;
+        sendExclusiveData;
+        popRequestQueue;
+    }
+
+    transition(E, FlushResponse, I) {
+        clearOwner;
+        sendDataToMem
+        popResponseQueue;
+    }
+
+
+    // TODO add upgrade requests somehow
+    // Receive exclusive request from state S, send exclusive reply
+    transition(S, ExclusiveRequest, E) {
+        sendExclusiveReply;
+        setOwner;
+        popRequestQueue;
+    }
+    
+    // TODO add renew requests somehow
+    // Receive shared request from state S, send shared reply
+    transition(S, ShareRequest, Sr_mem) {
+        sendMemRead;
+        popRequestQueue;
+    }  
+    transition(Sr_mem, MemData, S) {
+        sendShareReply;
+        popMemQueue;
+    }
+
+}
