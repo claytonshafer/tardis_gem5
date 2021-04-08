@@ -27,7 +27,7 @@ machine(MachineType:Directory, "Directory protocol")
           vnet_type="request";
 
     // Responses *from* the cache to the directory
-    MessageBuffer *responseFromCache, network="From", virtual_network="2",
+    MessageBuffer *responseFromCache, network="From", virtual_network="3",
           vnet_type="response";
 
     // Special buffer for memory requests. Kind of like the mandatory queue
@@ -36,7 +36,7 @@ machine(MachineType:Directory, "Directory protocol")
     // Special buffer for memory responses. Kind of like the mandatory queue
     MessageBuffer *responseFromMemory;
 
-    int memTS;
+
 
 {
     // For many things in SLICC you can specify a default. However, this
@@ -47,9 +47,9 @@ machine(MachineType:Directory, "Directory protocol")
         // Stable states.
         // NOTE: Thise are "cache-centric" states like in Sorin et al.
         // However, The access permissions are memory-centric.
-        I, AccessPermission:Read_Write,  desc="Invalid in the caches.";
+        I, AccessPermission:Invalid,  desc="Invalid in the caches.";
         S, AccessPermission:Read_Only,   desc="At least one cache has the blk";
-        E, AccessPermission:Invalid,     desc="A cache has the block in M";
+        E, AccessPermission:Read_Write,     desc="A cache has the block in M";
 
         // Moving from exclusive to shared, waiting for writeback reply
         E_wb, AccessPermission:Busy,      desc="Waiting for data from owner";
@@ -59,8 +59,11 @@ machine(MachineType:Directory, "Directory protocol")
 
         // Transient states
         Sr_mem, AccessPermission:Busy,    desc="Waiting for data from memory";
-        S_mem, AccessPermission:Invalid,  desc="Waiting for data from memory";
-        E_mem, AccessPermission:Invalid,  desc="Waiting for data from memory"; 
+        S_mem, AccessPermission:Busy,  desc="Waiting for data from memory";
+        E_mem, AccessPermission:Busy,  desc="Waiting for data from memory";
+        EE_mem, AccessPermission:Busy, desc="Waiting for memack"; 
+        ES_mem, AccessPermission:Busy, desc="Waiting for memack"; 
+        EI_mem, AccessPermission:Busy, desc="Waiting for memack"; 
     }
 
     enumeration(Event, desc="Directory events") {
@@ -236,13 +239,13 @@ machine(MachineType:Directory, "Directory protocol")
     }
 
     action(sendDataToMem, "w", desc="Write data to memory") {
-        peek(request_in, RequestMsg) {
+        peek(response_in, ResponseMsg) {
             DPRINTF(RubySlicc, "Writing memory for %#x\n", address);
             DPRINTF(RubySlicc, "Writing %s\n", in_msg.DataBlk);
             enqueue(memQueue_out, MemoryMsg, toMemLatency) {
                 out_msg.addr := address;
                 out_msg.Type := MemoryRequestType:MEMORY_WB;
-                out_msg.Sender := in_msg.Requestor;
+                out_msg.Sender := in_msg.Sender;
                 out_msg.MessageSize := MessageSizeType:Writeback_Data;
                 out_msg.DataBlk := in_msg.DataBlk;
                 out_msg.Len := 0;
@@ -313,8 +316,8 @@ machine(MachineType:Directory, "Directory protocol")
     action(updateTS_loadE, "uTS", desc="update timestamps") {
         Entry e := getDirectoryEntry(address);
         peek(request_in, RequestMsg) {
-            e.writeTS := in_msg.writeTS;
-            e.readTS := in_msg.readTS;
+            e.writeTS := in_msg.progTS;
+            e.readTS := in_msg.progTS;
         }
     }
 
@@ -326,6 +329,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.addr := address;
                 out_msg.Type := CoherenceResponseType:ExclusiveResponse;
                 out_msg.Sender := machineID;
+                out_msg.MessageSize := MessageSizeType:Data;
                 out_msg.Destination.add(in_msg.OriginalRequestorMachId);
                 out_msg.DataBlk := in_msg.DataBlk;
                 out_msg.readTS := e.readTS;
@@ -344,6 +348,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.Sender := machineID;
                 out_msg.Destination.add(in_msg.OriginalRequestorMachId);
                 out_msg.DataBlk := in_msg.DataBlk;
+                out_msg.MessageSize := MessageSizeType:Data;
                 out_msg.readTS := e.readTS;
                 out_msg.writeTS := e.writeTS;
             }
@@ -358,6 +363,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.addr := address;
                 out_msg.Type := CoherenceRequestType:WritebackRequest;
                 out_msg.Requestor := machineID;
+                out_msg.MessageSize := MessageSizeType:Control;
                 out_msg.Destination := e.Owner;
                 out_msg.readTS := in_msg.progTS + 10;
                 out_msg.original_requestor := in_msg.Requestor;
@@ -375,6 +381,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.Requestor := machineID;
                 out_msg.Destination := e.Owner;
                 out_msg.original_requestor := in_msg.Requestor;
+                out_msg.MessageSize := MessageSizeType:Control;
                 out_msg.readTS := e.readTS;
             }
         }        
@@ -390,6 +397,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.Sender := machineID;
                 out_msg.Destination.add(in_msg.original_requestor);
                 out_msg.DataBlk := in_msg.DataBlk;
+                out_msg.MessageSize := MessageSizeType:Data;
                 e.writeTS := in_msg.writeTS;
                 e.readTS := in_msg.readTS;
                 out_msg.readTS := e.readTS;
@@ -408,6 +416,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.Sender := machineID;
                 out_msg.Destination.add(in_msg.original_requestor);
                 out_msg.DataBlk := in_msg.DataBlk;
+                out_msg.MessageSize := MessageSizeType:Data;
                 e.readTS := in_msg.readTS;
                 e.writeTS := in_msg.writeTS;
                 out_msg.readTS := e.readTS;
@@ -426,16 +435,17 @@ machine(MachineType:Directory, "Directory protocol")
         popRequestQueue;
     }
 
-    transition(S_mem, ShareRequest) {
-        stall;
-    }
-
     // Receive exclusive request, send to memory
     transition(I, ExclusiveRequest, E_mem) {
         updateTS_loadE;
         sendMemRead;
+        setOwner;
         popRequestQueue;
     } 
+
+    transition(E_mem, {ExclusiveRequest, ShareRequest}) {
+        stall;
+    }
 
     // Receive data from memory, move to state S
     transition(S_mem, MemData, S) {
@@ -443,51 +453,79 @@ machine(MachineType:Directory, "Directory protocol")
         popMemQueue;
     } 
 
+    transition(E, MemData) {
+        stall;
+
+    }
+
     // Receive data from memory, move to state E
     transition(E_mem, MemData, E) {   
         sendExclusiveReply;
-        setOwner;
+        
         popMemQueue;
     }
+
+//    transition({S_mem, E_mem}, {ExclusiveRequest, ShareRequest}) {
+//      stall;
+//    }
 
 
     // Receive share request from state E, send writeback request
     transition(E, ShareRequest, E_wb) {
         sendWritebackRequest;
-        setOwner;
+        clearOwner;
         popRequestQueue;
     }
 
-    transition(E_wb, WritebackResponse, S) {
+    transition(E_wb, {WritebackResponse, FlushResponse}, ES_mem) {
         sendRespDataToMem;
         sendShareData;
-        popRequestQueue;
+        popResponseQueue;
        // probably need more here
+    }
+
+    transition(ES_mem, MemAck, S) {
+        popMemQueue;
     }
 
     // Receive exclusive request from state E, send flush request
     transition(E, ExclusiveRequest, E_fl) {
         sendFlushRequest;
+        clearOwner;
+        setOwner;
         popRequestQueue;
     }
 
-    transition(E_fl, FlushResponse, E) {
+    transition(E_fl, FlushResponse, EE_mem) {
         sendRespDataToMem;
         sendExclusiveData;
-        popRequestQueue;
+        popResponseQueue;
     }
 
-    transition(E, FlushResponse, I) {
+    transition(EE_mem, MemAck, E) {
+        popMemQueue;
+    }
+
+    transition(E, FlushResponse, EI_mem) {
         clearOwner;
         sendDataToMem
         popResponseQueue;
     }
 
+    transition({Sr_mem, EI_mem, EE_mem, ES_mem}, {ExclusiveRequest, ShareRequest, FlushResponse, WritebackResponse}) {
+        stall;
+    }
+
+    transition(EI_mem, MemAck, I) {
+        popMemQueue;
+    }
+
 
     // TODO add upgrade requests somehow
     // Receive exclusive request from state S, send exclusive reply
-    transition(S, ExclusiveRequest, E) {
-        sendExclusiveReply;
+    transition(S, ExclusiveRequest, E_mem) {
+        updateTS_loadE;
+        sendMemRead;
         setOwner;
         popRequestQueue;
     }
@@ -502,5 +540,6 @@ machine(MachineType:Directory, "Directory protocol")
         sendShareReply;
         popMemQueue;
     }
+
 
 }

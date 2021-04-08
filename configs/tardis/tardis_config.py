@@ -25,7 +25,10 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-""" This file creates a system with Ruby caches and runs the ruby random tester
+""" This file creates a system with Ruby caches and executes 'threads', a
+simple multi-threaded application with false sharing to stress the Ruby
+protocol.
+
 See Part 3 in the Learning gem5 book:
 http://gem5.org/documentation/learning_gem5/part3/MSIintro
 
@@ -39,7 +42,13 @@ import m5
 # import all of the SimObjects
 from m5.objects import *
 
-from test_caches import TestCacheSystem
+# Needed for running C++ threads
+m5.util.addToPath('../')
+from common.FileSystemConfig import config_filesystem
+
+# You can import ruby_caches_MI_example to use the MI_example protocol instead
+# of the MSI protocol
+from tardis_caches import MyCacheSystem
 
 # create the system we are going to simulate
 system = System()
@@ -53,25 +62,48 @@ system.clk_domain.voltage_domain = VoltageDomain()
 system.mem_mode = 'timing'               # Use timing accesses
 system.mem_ranges = [AddrRange('512MB')] # Create an address range
 
-# Create the tester
-system.tester = RubyTester(checks_to_complete = 1,
-                           wakeup_frequency = 10,
-                           num_cpus = 1)
+# Create a pair of simple CPUs
+system.cpu = [TimingSimpleCPU() for i in range(2)]
 
-# Create a simple memory controller and connect it to the membus
-system.mem_ctrl = SimpleMemory(latency="50ns", bandwidth="0GB/s")
-system.mem_ctrl.range = system.mem_ranges[0]
+# Create a DDR3 memory controller and connect it to the membus
+system.mem_ctrl = MemCtrl()
+system.mem_ctrl.dram = DDR3_1600_8x8()
+system.mem_ctrl.dram.range = system.mem_ranges[0]
+
+# create the interrupt controller for the CPU and connect to the membus
+for cpu in system.cpu:
+    cpu.createInterruptController()
 
 # Create the Ruby System
-system.caches = TestCacheSystem()
-system.caches.setup(system, system.tester, [system.mem_ctrl])
+system.caches = MyCacheSystem()
+system.caches.setup(system, system.cpu, [system.mem_ctrl])
+
+# get ISA for the binary to run.
+isa = str(m5.defines.buildEnv['TARGET_ISA']).lower()
+
+# Run application and use the compiled ISA to find the binary
+# grab the specific path to the binary
+thispath = os.path.dirname(os.path.realpath(__file__))
+binary = os.path.join(thispath, '../../', 'tests/test-progs/hello/bin/',
+                      isa, 'linux/hello')
+
+# Create a process for a simple "multi-threaded" application
+process = Process()
+# Set the command
+# cmd is a list which begins with the executable (like argv)
+process.cmd = [binary]
+# Set the cpu to use the process as its workload and create thread contexts
+for cpu in system.cpu:
+    cpu.workload = process
+    cpu.createThreads()
+
+system.workload = SEWorkload.init_compatible(binary)
+
+# Set up the pseudo file system for the threads function above
+config_filesystem(system)
 
 # set up the root SimObject and start the simulation
 root = Root(full_system = False, system = system)
-
-# Not much point in this being higher than the L1 latency
-m5.ticks.setGlobalFrequency('1ns')
-
 # instantiate all of the objects we've created above
 m5.instantiate()
 

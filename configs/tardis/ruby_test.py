@@ -39,7 +39,7 @@ import m5
 # import all of the SimObjects
 from m5.objects import *
 
-from test_caches import TestCacheSystem
+from test_tardis_caches import TestCacheSystem
 
 # create the system we are going to simulate
 system = System()
@@ -54,9 +54,9 @@ system.mem_mode = 'timing'               # Use timing accesses
 system.mem_ranges = [AddrRange('512MB')] # Create an address range
 
 # Create the tester
-system.tester = RubyTester(checks_to_complete = 1,
+system.tester = RubyTester(checks_to_complete = 10000,
                            wakeup_frequency = 10,
-                           num_cpus = 1)
+                           num_cpus = 2)
 
 # Create a simple memory controller and connect it to the membus
 system.mem_ctrl = SimpleMemory(latency="50ns", bandwidth="0GB/s")

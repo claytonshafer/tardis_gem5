@@ -5,7 +5,7 @@ machine(MachineType:L1Cache, "MSI cache")
       CacheMemory *cacheMemory; // This stores the data and cache states
       bool send_evictions; // Needed to support O3 CPU and mwait
 
-      int progTS_global := 1;
+      int progTS_global;
       // Other declarations
       // Message buffers are required to send and receive data from the Ruby
       // network. The from/to and request/response can be confusing!
@@ -19,7 +19,7 @@ machine(MachineType:L1Cache, "MSI cache")
       MessageBuffer * requestToDir, network="To", virtual_network="0",
             vnet_type="request";
       // Responses *to* the directory or other caches
-      MessageBuffer * responseToDir, network="To", virtual_network="2",
+      MessageBuffer * responseToDir, network="To", virtual_network="3",
             vnet_type="response";
       // Responses *from* directory and other caches for this cache's reqs.
       MessageBuffer * responseFromDir, network="From",
@@ -27,7 +27,7 @@ machine(MachineType:L1Cache, "MSI cache")
 
 
       MessageBuffer * requestFromDir, network="From",
-            virtual_network="1", vnet_type="response";
+            virtual_network="1", vnet_type="request";
 
       // This is all of the incoming requests from the core via the sequencer
       MessageBuffer * mandatoryQueue;
@@ -93,8 +93,8 @@ machine(MachineType:L1Cache, "MSI cache")
     structure(Entry, desc="Cache entry", interface="AbstractCacheEntry") {
         State CacheState,        desc="cache state";
         DataBlock DataBlk,       desc="Data in the block";
-        int readTS,              desc="Read timestamp";
-        int writeTS,             desc="Write timestamp";
+        int readTS, default=0,              desc="Read timestamp";
+        int writeTS, default=0,             desc="Write timestamp";
     }
 
     // TBE is the "transaction buffer entry". This stores information needed
@@ -273,10 +273,10 @@ machine(MachineType:L1Cache, "MSI cache")
                 TBE tbe := TBEs[in_msg.addr];
                 // The TBE better exist since this is a response and we need to
                 // be able to check the remaining acks.
-                assert(is_valid(tbe));
+                //assert(is_valid(tbe));
                 if (in_msg.Type == CoherenceResponseType:ShareResponse) {
                   trigger(Event:ShareReply, in_msg.addr, cache_entry, tbe);
-                } else if (in_msg.Type == CoherenceResponseType:ExclusiveResponse) {
+                } else if (in_msg.Type == CoherenceResponseType:ExclusiveResponse && machineIDToMachineType(in_msg.Sender) == MachineType:Directory) {
                   trigger(Event:ExclusiveReply, in_msg.addr, cache_entry, tbe);
                 }
             }
@@ -313,8 +313,10 @@ machine(MachineType:L1Cache, "MSI cache")
                 // full cache block requests.
                 Entry cache_entry := getCacheEntry(in_msg.LineAddress);
                 TBE tbe := TBEs[in_msg.LineAddress];
+                State cache_state := getState(tbe, cache_entry, in_msg.LineAddress);
                 // If there isn't a matching entry and no room in the cache,
                 // then we need to find a victim.
+                
                 if (is_invalid(cache_entry) &&
                         cacheMemory.cacheAvail(in_msg.LineAddress) == false ) {
                     // make room for the block
@@ -325,11 +327,12 @@ machine(MachineType:L1Cache, "MSI cache")
                     Entry victim_entry := getCacheEntry(addr);
                     TBE victim_tbe := TBEs[addr];
                     trigger(Event:Replacement, addr, victim_entry, victim_tbe);
-                } else if ((progTS_global > cache_entry.readTS)&&
-                            (in_msg.Type==RubyRequestType:LD || in_msg.Type==RubyRequestType:IFETCH)) {
-                    Addr addr := cacheMemory.cacheProbe(in_msg.LineAddress);
-                    trigger(Event:Expiration, addr, cache_entry, tbe);
                 } else {
+                    if (!is_invalid(cache_entry) && (in_msg.Type==RubyRequestType:LD || in_msg.Type==RubyRequestType:IFETCH)) {
+                        if (progTS_global > cache_entry.readTS && cache_state==State:S) {
+                          trigger(Event:Expiration, in_msg.LineAddress, cache_entry, tbe);
+                        }
+                    }
                     if (in_msg.Type == RubyRequestType:LD ||
                             in_msg.Type == RubyRequestType:IFETCH) {
                         trigger(Event:Load, in_msg.LineAddress, cache_entry,
@@ -369,7 +372,7 @@ machine(MachineType:L1Cache, "MSI cache")
 
     // TODO: write actions
     // Send ShareRequest to TM on load
-    action(sendShareRequest_invalid, 'sSRI', desc="Send share request to directory from state I") {
+    action(sendShareRequest_invalid, "sSRI", desc="Send share request to directory from state I") {
       
         enqueue(request_out, RequestMsg, 1) {
           out_msg.addr := address;
@@ -383,7 +386,7 @@ machine(MachineType:L1Cache, "MSI cache")
         }
     }
     // Send ExclusiveRequest to TM
-    action(sendExclusiveRequest_invalid, 'sERI', desc="Send exclusive request to directory from Invalid") {
+    action(sendExclusiveRequest_invalid, "sERI", desc="Send exclusive request to directory from Invalid") {
 
       enqueue(request_out, RequestMsg, 1) { 
           out_msg.addr := address;
@@ -398,7 +401,7 @@ machine(MachineType:L1Cache, "MSI cache")
     }
 
 
-    action(sendExclusiveRequest_shared, 'sERS', desc="Send exclusive request to directory from shared - lease exp") {
+    action(sendExclusiveRequest_shared, "sERS", desc="Send exclusive request to directory from shared - lease exp") {
 
       enqueue(request_out, RequestMsg, 1) { 
           out_msg.addr := address;
@@ -424,13 +427,13 @@ machine(MachineType:L1Cache, "MSI cache")
     }
 
     // Update timestamps
-    action(update_after_shload, 'uSL', desc="Update timestamps after load from state shared") {
+    action(update_after_shload, "uSL", desc="Update timestamps after load from state shared") {
         if (cache_entry.writeTS > progTS_global) {
            progTS_global:=cache_entry.writeTS; 
         }
     }
 
-    action(update_after_exload, 'uEL', desc="Update timestamps after load from state exclusive") {
+    action(update_after_exload, "uEL", desc="Update timestamps after load from state exclusive") {
         if (cache_entry.readTS < progTS_global) {
           cache_entry.readTS := progTS_global;  
         }     
@@ -440,7 +443,7 @@ machine(MachineType:L1Cache, "MSI cache")
     }
 
 
-    action(update_after_exstore, 'uES', desc="Update timestamps after store from state exclusive") {
+    action(update_after_exstore, "uES", desc="Update timestamps after store from state exclusive") {
         if ((cache_entry.readTS + 1) > progTS_global) {
           progTS_global:=cache_entry.readTS+1;
         }
@@ -448,18 +451,39 @@ machine(MachineType:L1Cache, "MSI cache")
         cache_entry.writeTS := progTS_global;
     }
 
+
+    // Send Eviction to TM
+    action(sendEviction, "sEV", desc="Send flush reply to directory") {
+ 
+        enqueue(response_out, ResponseMsg, 1) {
+            out_msg.addr := address;
+            out_msg.Type := CoherenceResponseType:FlushResponse;
+            out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
+            out_msg.MessageSize := MessageSizeType:Data;
+            out_msg.Sender := machineID;
+            out_msg.DataBlk := cache_entry.DataBlk;
+            out_msg.writeTS := cache_entry.writeTS;
+            out_msg.readTS := cache_entry.readTS;
+            out_msg.progTS := progTS_global; 
+//            out_msg.original_requestor := in_msg.original_requestor;
+
+        }
+
+    }
+
     // Send FlushReply to TM
-    action(sendFlushReply, 'sFR', desc="Send flush reply to directory") {
+    action(sendFlushReply, "sFR", desc="Send flush reply to directory") {
         peek(request_in, RequestMsg) {
         enqueue(response_out, ResponseMsg, 1) {
             out_msg.addr := address;
             out_msg.Type := CoherenceResponseType:FlushResponse;
             out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
-            out_msg.MessageSize := MessageSizeType:Control;
+            out_msg.MessageSize := MessageSizeType:Data;
             out_msg.Sender := machineID;
             out_msg.writeTS := cache_entry.writeTS;
             out_msg.readTS := cache_entry.readTS;
             out_msg.progTS := progTS_global; 
+            out_msg.DataBlk := cache_entry.DataBlk;
             out_msg.original_requestor := in_msg.original_requestor;
         }
         }
@@ -473,8 +497,9 @@ machine(MachineType:L1Cache, "MSI cache")
             out_msg.addr := address;
             out_msg.Type := CoherenceResponseType:WritebackResponse;
             out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
-            out_msg.MessageSize := MessageSizeType:Control;
+            out_msg.MessageSize := MessageSizeType:Data;
             out_msg.Sender := machineID;
+            out_msg.DataBlk := cache_entry.DataBlk;
             out_msg.writeTS := cache_entry.writeTS;
             out_msg.readTS := cache_entry.readTS;
             out_msg.progTS := progTS_global;
@@ -599,10 +624,7 @@ machine(MachineType:L1Cache, "MSI cache")
         popMandatoryQueue;
     }
 
-    // Anything while waiting for data to come back from TM
-    transition(IS_D, {Load, Store, Replacement}) {
-        stall;
-    }
+
 
     // Data arrives, enter state S
     transition(IS_D, ShareReply, S) {
@@ -611,6 +633,11 @@ machine(MachineType:L1Cache, "MSI cache")
         externalLoadHit;
         update_after_shload;
         popResponseQueue;
+    }
+
+
+    // Expiration in state E, ignore
+    transition(E, Expiration) {
     }
 
     // Load from state shared, pts < rts
@@ -637,6 +664,10 @@ machine(MachineType:L1Cache, "MSI cache")
         popMandatoryQueue;
     }
 
+    transition(SE_D, Replacement) {
+        stall;
+    }
+
     // Data arrives, enter state E
     transition(SE_D, ExclusiveReply, E) {
         writeDataToCache;
@@ -646,6 +677,9 @@ machine(MachineType:L1Cache, "MSI cache")
         popResponseQueue;
     }
 
+    transition({IE_D, IS_D}, {Load, Store, Replacement, Expiration}) {
+        stall;
+    }
 
     // Data arrives, enter state E
     transition(IE_D, ExclusiveReply, E) {
@@ -655,6 +689,7 @@ machine(MachineType:L1Cache, "MSI cache")
         update_after_exstore;
         popResponseQueue;
     }
+
 
     // Store hit in state E
     transition(E, Store) {
@@ -672,8 +707,10 @@ machine(MachineType:L1Cache, "MSI cache")
 
     // Receive flush request from TM, enter state I
     transition(E, FlushRequest, I) {
+        allocateTBE;
         sendFlushReply;
         deallocateCacheBlock;
+        deallocateTBE;
         popRequestQueue;
     }
 
@@ -693,9 +730,16 @@ machine(MachineType:L1Cache, "MSI cache")
     // Writeback from state exclusive on eviction
     // Flush Reply
     transition(E, Replacement, I) {
-        sendFlushReply;
+        allocateTBE;
+        sendEviction;
+        deallocateTBE;
         deallocateCacheBlock;
 
+    }
+    
+    // Request in flight after replacement
+    transition(I, {WritebackRequest, FlushRequest}) {
+      
     }
   
 
