@@ -87,6 +87,7 @@ machine(MachineType:Directory, "Directory protocol")
         State DirState,         desc="Directory state";
         NetDest Owner,          desc="Owner of this block";
         DataBlock DataBlk,      desc="Data in LLC";
+        MachineID requestor,       desc="Requestor";
         int readTS,             desc="Read timestamp of this block";
         int writeTS,            desc="Write timestamp of this block";
     }
@@ -316,8 +317,12 @@ machine(MachineType:Directory, "Directory protocol")
     action(updateTS_loadE, "uTS", desc="update timestamps") {
         Entry e := getDirectoryEntry(address);
         peek(request_in, RequestMsg) {
-            e.writeTS := in_msg.progTS;
-            e.readTS := in_msg.progTS;
+            if (e.readTS < in_msg.progTS) {
+                e.writeTS := in_msg.progTS;
+                e.readTS := in_msg.progTS;
+            } else {
+                e.readTS := e.readTS + 1;
+            } 
         }
     }
 
@@ -366,8 +371,8 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.MessageSize := MessageSizeType:Control;
                 out_msg.Destination := e.Owner;
                 out_msg.readTS := in_msg.progTS + 10;
-                out_msg.original_requestor := in_msg.Requestor;
             }
+            e.requestor := in_msg.Requestor;
         }        
     }
 
@@ -380,10 +385,10 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.Type := CoherenceRequestType:FlushRequest;
                 out_msg.Requestor := machineID;
                 out_msg.Destination := e.Owner;
-                out_msg.original_requestor := in_msg.Requestor;
                 out_msg.MessageSize := MessageSizeType:Control;
                 out_msg.readTS := e.readTS;
             }
+            e.requestor := in_msg.Requestor;
         }        
     }
 
@@ -395,7 +400,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.addr := address;
                 out_msg.Type := CoherenceResponseType:ExclusiveResponse;
                 out_msg.Sender := machineID;
-                out_msg.Destination.add(in_msg.original_requestor);
+                out_msg.Destination.add(e.requestor);
                 out_msg.DataBlk := in_msg.DataBlk;
                 out_msg.MessageSize := MessageSizeType:Data;
                 e.writeTS := in_msg.writeTS;
@@ -414,7 +419,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.addr := address;
                 out_msg.Type := CoherenceResponseType:ShareResponse;
                 out_msg.Sender := machineID;
-                out_msg.Destination.add(in_msg.original_requestor);
+                out_msg.Destination.add(e.requestor);
                 out_msg.DataBlk := in_msg.DataBlk;
                 out_msg.MessageSize := MessageSizeType:Data;
                 e.readTS := in_msg.readTS;
@@ -443,7 +448,7 @@ machine(MachineType:Directory, "Directory protocol")
         popRequestQueue;
     } 
 
-    transition(E_mem, {ExclusiveRequest, ShareRequest}) {
+    transition({S_mem, E_mem}, {ExclusiveRequest, ShareRequest}) {
         stall;
     }
 
@@ -510,6 +515,10 @@ machine(MachineType:Directory, "Directory protocol")
         clearOwner;
         sendDataToMem
         popResponseQueue;
+    }
+
+    transition({E_fl, E_wb}, {ShareRequest, ExclusiveRequest}) {
+        stall;
     }
 
     transition({Sr_mem, EI_mem, EE_mem, ES_mem}, {ExclusiveRequest, ShareRequest, FlushResponse, WritebackResponse}) {

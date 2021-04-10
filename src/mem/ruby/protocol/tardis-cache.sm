@@ -329,7 +329,7 @@ machine(MachineType:L1Cache, "MSI cache")
                     trigger(Event:Replacement, addr, victim_entry, victim_tbe);
                 } else {
                     if (!is_invalid(cache_entry) && (in_msg.Type==RubyRequestType:LD || in_msg.Type==RubyRequestType:IFETCH)) {
-                        if (progTS_global > cache_entry.readTS && cache_state==State:S) {
+                        if (progTS_global >= cache_entry.readTS && cache_state==State:S) {
                           trigger(Event:Expiration, in_msg.LineAddress, cache_entry, tbe);
                         }
                     }
@@ -465,8 +465,6 @@ machine(MachineType:L1Cache, "MSI cache")
             out_msg.writeTS := cache_entry.writeTS;
             out_msg.readTS := cache_entry.readTS;
             out_msg.progTS := progTS_global; 
-//            out_msg.original_requestor := in_msg.original_requestor;
-
         }
 
     }
@@ -484,7 +482,6 @@ machine(MachineType:L1Cache, "MSI cache")
             out_msg.readTS := cache_entry.readTS;
             out_msg.progTS := progTS_global; 
             out_msg.DataBlk := cache_entry.DataBlk;
-            out_msg.original_requestor := in_msg.original_requestor;
         }
         }
 
@@ -503,7 +500,6 @@ machine(MachineType:L1Cache, "MSI cache")
             out_msg.writeTS := cache_entry.writeTS;
             out_msg.readTS := cache_entry.readTS;
             out_msg.progTS := progTS_global;
-            out_msg.original_requestor := in_msg.original_requestor; 
         }
         }
 
@@ -677,7 +673,7 @@ machine(MachineType:L1Cache, "MSI cache")
         popResponseQueue;
     }
 
-    transition({IE_D, IS_D}, {Load, Store, Replacement, Expiration}) {
+    transition({IE_D, IS_D}, {FlushRequest, WritebackRequest, Load, Store, Replacement, Expiration}) {
         stall;
     }
 
@@ -736,10 +732,14 @@ machine(MachineType:L1Cache, "MSI cache")
         deallocateCacheBlock;
 
     }
+
+    transition(SE_D, {FlushRequest, WritebackRequest}) {
+        stall;
+    }
     
     // Request in flight after replacement
     transition(I, {WritebackRequest, FlushRequest}) {
-      
+        popRequestQueue;  
     }
   
 

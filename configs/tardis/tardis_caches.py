@@ -62,8 +62,8 @@ class MyCacheSystem(RubySystem):
         # MSI uses 3 virtual networks. One for requests (lowest priority), one
         # for responses (highest priority), and one for "forwards" or
         # cache-to-cache requests. See *.sm files for details.
-        self.number_of_virtual_networks = 3
-        self.network.number_of_virtual_networks = 3
+        self.number_of_virtual_networks = 4
+        self.network.number_of_virtual_networks = 4
 
         # There is a single global list of all of the controllers to make it
         # easier to connect everything to the global network. This can be
