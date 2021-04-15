@@ -430,6 +430,8 @@ machine(MachineType:L1Cache, "MSI cache")
     action(update_after_shload, "uSL", desc="Update timestamps after load from state shared") {
         if (cache_entry.writeTS > progTS_global) {
            progTS_global:=cache_entry.writeTS; 
+        } else {
+          progTS_global := progTS_global + 1;
         }
     }
 
