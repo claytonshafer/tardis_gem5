@@ -47,9 +47,9 @@ machine(MachineType:Directory, "Directory protocol")
         // Stable states.
         // NOTE: Thise are "cache-centric" states like in Sorin et al.
         // However, The access permissions are memory-centric.
-        I, AccessPermission:Invalid,  desc="Invalid in the caches.";
+        I, AccessPermission:Read_Write,  desc="Invalid in the caches.";
         S, AccessPermission:Read_Only,   desc="At least one cache has the blk";
-        E, AccessPermission:Read_Write,     desc="A cache has the block in M";
+        E, AccessPermission:Invalid,     desc="A cache has the block in M";
 
         // Moving from exclusive to shared, waiting for writeback reply
         E_wb, AccessPermission:Busy,      desc="Waiting for data from owner";
@@ -160,6 +160,7 @@ machine(MachineType:Directory, "Directory protocol")
     // This returns the number of writes. So, if we write then return 1
     int functionalWrite(Addr addr, Packet *pkt) {
         if (functionalMemoryWrite(pkt)) {
+	    DPRINTF(ProtocolTrace, "Functional write to %s \n", addr);
             return 1;
         } else {
             return 0;
@@ -178,6 +179,7 @@ machine(MachineType:Directory, "Directory protocol")
         if (memQueue_in.isReady(clockEdge())) {
             peek(memQueue_in, MemoryMsg) {
                 if (in_msg.Type == MemoryRequestType:MEMORY_READ) {
+                    DPRINTF(ProtocolTrace, "MemData: %s \n", in_msg.DataBlk);
                     trigger(Event:MemData, in_msg.addr);
                 } else if (in_msg.Type == MemoryRequestType:MEMORY_WB) {
                     trigger(Event:MemAck, in_msg.addr);
@@ -229,6 +231,7 @@ machine(MachineType:Directory, "Directory protocol")
             // Send request through special memory request queue. At some
             // point the response will be on the memory response queue.
             // Like enqueue, this takes a latency for the request.
+            DPRINTF(ProtocolTrace, "Reading address: %s \n", address);
             enqueue(memQueue_out, MemoryMsg, toMemLatency) {
                 out_msg.addr := address;
                 out_msg.Type := MemoryRequestType:MEMORY_READ;
