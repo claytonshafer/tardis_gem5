@@ -431,7 +431,7 @@ machine(MachineType:L1Cache, "MSI cache")
         if (cache_entry.writeTS > progTS_global) {
            progTS_global:=cache_entry.writeTS; 
         } else {
-          progTS_global := progTS_global + 1;
+          //progTS_global := progTS_global + 1;
         }
     }
 

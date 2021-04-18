@@ -52,9 +52,9 @@ machine(MachineType:Directory, "Directory protocol")
         // Stable states.
         // NOTE: Thise are "cache-centric" states like in Sorin et al.
         // However, The access permissions are memory-centric.
-        I, AccessPermission:Invalid,  desc="Invalid in the caches.";
+        I, AccessPermission:Read_Write,  desc="Invalid in the caches.";
         S, AccessPermission:Read_Only,   desc="At least one cache has the blk";
-        E, AccessPermission:Read_Write,     desc="A cache has the block in M";
+        E, AccessPermission:Invalid,     desc="A cache has the block in M";
 
         // Moving from exclusive to shared, waiting for writeback reply
         E_wb, AccessPermission:Busy,      desc="Waiting for data from owner";
@@ -370,11 +370,11 @@ machine(MachineType:Directory, "Directory protocol")
     action(updateTS_loadS, "uTSl", desc="make new directory entry") {
         Entry e := getDirectoryEntry(address);
         peek(request_in, RequestMsg) {
-            if (in_msg.progTS + 10 > e.writeTS + 10) {
-              e.readTS := in_msg.progTS + 10;
+            if (in_msg.progTS + 100 > e.writeTS + 100) {
+              e.readTS := in_msg.progTS + 100;
             }
-            if (in_msg.progTS + 10 <= e.writeTS + 10) {
-              e.readTS := e.writeTS + 10;
+            if (in_msg.progTS + 100 <= e.writeTS + 100) {
+              e.readTS := e.writeTS + 100;
             }
         }
 
@@ -437,7 +437,7 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.Requestor := machineID;
                 out_msg.MessageSize := MessageSizeType:Control;
                 out_msg.Destination := e.Owner;
-                out_msg.readTS := in_msg.progTS + 10;
+                out_msg.readTS := in_msg.progTS + 100;
             }
             e.requestor := in_msg.Requestor;
         }        

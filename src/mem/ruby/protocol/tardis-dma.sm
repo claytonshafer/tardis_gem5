@@ -31,9 +31,9 @@ machine(MachineType:DMA, "DMA Controller")
     : DMASequencer * dma_sequencer;
       Cycles request_latency := 6;
 
-      MessageBuffer * responseFromDir, network="From", virtual_network="1",
+      MessageBuffer * responseFromDir, network="From", virtual_network="4",
             vnet_type="response";
-      MessageBuffer * requestToDir, network="To", virtual_network="0",
+      MessageBuffer * requestToDir, network="To", virtual_network="5",
             vnet_type="request";
       MessageBuffer * mandatoryQueue;
 {
