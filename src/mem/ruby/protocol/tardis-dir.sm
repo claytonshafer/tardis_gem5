@@ -85,11 +85,12 @@ machine(MachineType:Directory, "Directory protocol")
         // Data requests from the cache
         ShareRequest,  desc="Request for read-only data from the cache";
         ExclusiveRequest, desc="Request for read-write data from the cache";
-        
+        RenewRequest,     desc="Request for share, still valid";        
+
         // Responses
         WritebackResponse,  desc="Core writes back cache data";
         FlushResponse,      desc="Core flushes data";
-
+        RenewResponse,      desc="still valid";
 
         // From Memory
         MemData,      desc="Data from memory";
@@ -273,10 +274,16 @@ machine(MachineType:Directory, "Directory protocol")
             peek(request_in, RequestMsg) {
                 TBE tbe := TBEs[in_msg.addr];
                 Entry entry := getDirectoryEntry(in_msg.addr);
-                if (in_msg.Type == CoherenceRequestType:ShareRequest) {
+                if (in_msg.Type == CoherenceRequestType:ShareRequest && (in_msg.writeTS != entry.writeTS || in_msg.hasData != 0)) {
                     trigger(Event:ShareRequest, in_msg.addr, tbe);
                 } else if (in_msg.Type == CoherenceRequestType:ExclusiveRequest) {
                     trigger(Event:ExclusiveRequest, in_msg.addr, tbe);
+                } else if (in_msg.Type == CoherenceRequestType:ShareRequest && in_msg.hasData != 0 && in_msg.writeTS == entry.writeTS && entry.DirState == State:S) {
+                    trigger(Event:RenewRequest, in_msg.addr, tbe);
+                } else if (in_msg.Type == CoherenceRequestType:ShareRequest && !(entry.DirState == State:S)) {
+                    trigger(Event:ShareRequest, in_msg.addr, tbe);
+		} else if (in_msg.Type == CoherenceRequestType:ShareRequest) {
+		    trigger(Event:ShareRequest, in_msg.addr, tbe);
                 } else {
                     error("Unexpected message type.");
                 }
@@ -476,6 +483,22 @@ machine(MachineType:Directory, "Directory protocol")
                 out_msg.writeTS := e.writeTS; 
             }
         } 
+    }
+
+    action(sendRenewResponse, "srn", desc="send renew reply") {
+        Entry e := getDirectoryEntry(address);
+        peek(request_in, RequestMsg) {
+          enqueue(response_out, ResponseMsg, 1) {
+              out_msg.addr := address;
+              out_msg.Type := CoherenceResponseType:RenewResponse;
+              out_msg.Sender := machineID;
+              out_msg.Destination.add(in_msg.Requestor);
+              out_msg.MessageSize := MessageSizeType:Control;
+              out_msg.readTS := e.readTS;
+              out_msg.writeTS := e.writeTS;
+          }
+        }
+
     }
 
     // Send data to requestor - going to state S
@@ -739,7 +762,7 @@ machine(MachineType:Directory, "Directory protocol")
         popRequestQueue;
     } 
 
-    transition({S_mem, E_mem}, {DMA_WRITE, DMA_READ, ExclusiveRequest, ShareRequest}) {
+    transition({S_mem, E_mem}, {DMA_WRITE, DMA_READ, ExclusiveRequest, ShareRequest,RenewRequest}) {
         stall;
     }
 
@@ -816,7 +839,7 @@ machine(MachineType:Directory, "Directory protocol")
       stall;
     }
 
-    transition({IDR_mem, IDW_mem, SDR_mem, SDW_mem, EDW_mem, EDR_mem, Sr_mem, EI_mem, EE_mem, ES_mem}, {ExclusiveRequest, ShareRequest, FlushResponse, WritebackResponse, DMA_READ, DMA_WRITE}) {
+    transition({IDR_mem, IDW_mem, SDR_mem, SDW_mem, EDW_mem, EDR_mem, Sr_mem, EI_mem, EE_mem, ES_mem}, {ExclusiveRequest, ShareRequest, FlushResponse, WritebackResponse, DMA_READ, DMA_WRITE, RenewRequest}) {
         stall;
     }
 
@@ -841,6 +864,14 @@ machine(MachineType:Directory, "Directory protocol")
         sendMemRead;
         popRequestQueue;
     }  
+
+
+    transition(S, RenewRequest, S) {
+        updateTS_loadS;
+        sendRenewResponse;
+        popRequestQueue;
+    }
+
     transition(Sr_mem, MemData, S) {
         sendShareReply;
         popMemQueue;

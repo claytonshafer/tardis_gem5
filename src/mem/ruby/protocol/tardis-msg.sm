@@ -51,6 +51,7 @@ enumeration(CoherenceResponseType, desc="Types of response messages") {
     ExclusiveResponse,   desc="Contains the most up-to-date data";
     FlushResponse,       desc="Cache has invalidated";
     WritebackResponse,   desc="Cache has downgraded";
+    RenewResponse,       desc="still valid";
 }
 
 structure(RequestMsg, desc="Used for Cache->Dir and Fwd messages",
@@ -65,6 +66,7 @@ structure(RequestMsg, desc="Used for Cache->Dir and Fwd messages",
     int writeTS,                 desc="write timestamp";
     int readTS,                  desc="read timestamp";
     int progTS,                   desc="program timestamp";
+    int hasData,		 desc="this core already has the data";
     // NOTE: You *must* use MessageSize as the name of this variable, and it's
     // required that you have a MessageSize for each type of message. You will
     // the the error "panic: MessageSizeType() called on wrong message!"

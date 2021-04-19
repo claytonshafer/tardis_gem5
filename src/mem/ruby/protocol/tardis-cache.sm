@@ -54,7 +54,7 @@ machine(MachineType:L1Cache, "MSI cache")
         S,      AccessPermission:Read_Only,
                     desc="Shared. Read-only, other caches may have the block";
 
-        S_expired,   AccessPermission:Invalid,
+        S_exp,   AccessPermission:Invalid,
                       desc="Shared, lease has expired. Must send another request";
 
         // States moving out of S
@@ -79,6 +79,7 @@ machine(MachineType:L1Cache, "MSI cache")
         // Network events
         ShareReply,     desc="Incoming data from directory or other cache";
         ExclusiveReply, desc="Incoming data from directory";
+        RenewReply,     desc="renew reply from directory";
         
         FlushRequest,       desc="Invalidate data";
         WritebackRequest,   desc="Send current copy of data, enter state S";
@@ -278,6 +279,8 @@ machine(MachineType:L1Cache, "MSI cache")
                   trigger(Event:ShareReply, in_msg.addr, cache_entry, tbe);
                 } else if (in_msg.Type == CoherenceResponseType:ExclusiveResponse && machineIDToMachineType(in_msg.Sender) == MachineType:Directory) {
                   trigger(Event:ExclusiveReply, in_msg.addr, cache_entry, tbe);
+                } else if (in_msg.Type == CoherenceResponseType:RenewResponse) {
+                  trigger(Event:RenewReply, in_msg.addr, cache_entry, tbe);
                 }
             }
         }
@@ -370,6 +373,20 @@ machine(MachineType:L1Cache, "MSI cache")
     // cache_entry: The cache entry passed in the trigger call
     // tbe: The TBE passed in the trigger call
 
+    action(sendShareRequest_expiration, "sSRx", desc="Send share request to directory from state I") {
+      
+        enqueue(request_out, RequestMsg, 1) {
+          out_msg.addr := address;
+          out_msg.Type := CoherenceRequestType:ShareRequest;
+          out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
+          out_msg.MessageSize := MessageSizeType:Control;
+          out_msg.Requestor := machineID;
+          out_msg.writeTS := 0;
+          out_msg.readTS := 0;
+          out_msg.progTS := progTS_global;
+	  out_msg.hasData := 1;
+        }
+    }
     // TODO: write actions
     // Send ShareRequest to TM on load
     action(sendShareRequest_invalid, "sSRI", desc="Send share request to directory from state I") {
@@ -423,6 +440,12 @@ machine(MachineType:L1Cache, "MSI cache")
             cache_entry.DataBlk := in_msg.DataBlk;
             cache_entry.readTS := in_msg.readTS;
             cache_entry.writeTS := in_msg.writeTS;
+        }
+    }
+
+    action(update_on_renew, "uor", desc="update ts after renew response") {
+        peek(response_in, ResponseMsg) {
+            cache_entry.readTS := in_msg.readTS;
         }
     }
 
@@ -633,6 +656,21 @@ machine(MachineType:L1Cache, "MSI cache")
         popResponseQueue;
     }
 
+    transition(S_exp, ShareReply, S) {
+        writeDataToCache;
+        deallocateTBE;
+        externalLoadHit;
+        update_after_shload;
+        popResponseQueue;
+    }
+
+    transition(S_exp, RenewReply, S) {
+        deallocateTBE;
+        externalLoadHit;
+        update_on_renew;
+        popResponseQueue;
+    }
+
 
     // Expiration in state E, ignore
     transition(E, Expiration) {
@@ -646,12 +684,10 @@ machine(MachineType:L1Cache, "MSI cache")
     } 
 
     // Lease has expired, move to I
-    transition(S, Expiration, IS_D) {
+    transition(S, Expiration, S_exp) {
         forwardEviction;
-        deallocateCacheBlock;
-        allocateCacheBlock;
         allocateTBE;
-        sendShareRequest_invalid; 
+        sendShareRequest_expiration; 
         popMandatoryQueue;
     }
     
@@ -675,7 +711,11 @@ machine(MachineType:L1Cache, "MSI cache")
         popResponseQueue;
     }
 
-    transition({IE_D, IS_D}, {FlushRequest, WritebackRequest, Load, Store, Replacement, Expiration}) {
+    transition({S_exp, IS_D}, {FlushRequest, WritebackRequest, Load, Store, Replacement, Expiration}) {
+        stall;
+    }
+
+    transition(IE_D, {Load, Store, Replacement, Expiration}) {
         stall;
     }
 
@@ -740,7 +780,7 @@ machine(MachineType:L1Cache, "MSI cache")
     }
     
     // Request in flight after replacement
-    transition(I, {WritebackRequest, FlushRequest}) {
+    transition({IE_D, I, S}, {WritebackRequest, FlushRequest}) {
         popRequestQueue;  
     }
   
