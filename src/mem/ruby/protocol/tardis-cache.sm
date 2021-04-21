@@ -539,7 +539,7 @@ machine(MachineType:L1Cache, "MSI cache")
         // Send the data back to the sequencer/CPU. NOTE: False means it was
         // not an "external hit", but hit in this local cache.
           sequencer.readCallback(address, cache_entry.DataBlk, false);
-        
+        progTS_global := progTS_global + 1; 
     }
 
 
