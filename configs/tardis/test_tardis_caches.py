@@ -64,8 +64,8 @@ class TestCacheSystem(RubySystem):
         self.network = MyNetwork(self)
 
         # MSI uses 3 virtual networks
-        self.number_of_virtual_networks = 4
-        self.network.number_of_virtual_networks = 4
+        self.number_of_virtual_networks = 6
+        self.network.number_of_virtual_networks = 6
 
         self.controllers = \
             [L1Cache(system, self, self) for i in range(num_testers)] + \

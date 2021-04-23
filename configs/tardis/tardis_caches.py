@@ -62,8 +62,8 @@ class MyCacheSystem(RubySystem):
         # MSI uses 3 virtual networks. One for requests (lowest priority), one
         # for responses (highest priority), and one for "forwards" or
         # cache-to-cache requests. See *.sm files for details.
-        self.number_of_virtual_networks = 4
-        self.network.number_of_virtual_networks = 4
+        self.number_of_virtual_networks = 6
+        self.network.number_of_virtual_networks = 6
 
         # There is a single global list of all of the controllers to make it
         # easier to connect everything to the global network. This can be
@@ -201,6 +201,10 @@ class DirController(Directory_Controller):
         self.responseToCache.master = ruby_system.network.slave
         self.requestToCache = MessageBuffer(ordered = True)
         self.requestToCache.master = ruby_system.network.slave
+        self.dmaRequestToDir = MessageBuffer(ordered = True)
+        self.dmaRequestToDir.slave = ruby_system.network.master
+        self.dmaResponseFromDir = MessageBuffer(ordered = True)
+        self.dmaResponseFromDir.master = ruby_system.network.slave
 
         # These are other special message buffers. They are used to send
         # requests to memory and responses from memory back to the controller.
